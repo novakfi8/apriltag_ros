@@ -13,6 +13,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_ros/transform_broadcaster.hpp>
+#include <geometry_msgs/msg/pose.hpp>
 
 // apriltag
 #include "tag_functions.hpp"
@@ -199,6 +200,11 @@ AprilTagNode::~AprilTagNode()
 void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_img,
                             const sensor_msgs::msg::CameraInfo::ConstSharedPtr& msg_ci)
 {
+
+    // hot fix of timestamps
+    auto header = msg_img->header; 
+    header.stamp = this->get_clock()->now(); 
+
     // camera intrinsics for rectified images
     const std::array<double, 4> intrinsics = {msg_ci->p[0], msg_ci->p[5], msg_ci->p[2], msg_ci->p[6]};
 
@@ -224,7 +230,9 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         timeprofile_display(td->tp);
 
     apriltag_msgs::msg::AprilTagDetectionArray msg_detections;
-    msg_detections.header = msg_img->header;
+    msg_detections.header = header;
+
+    
 
     std::vector<geometry_msgs::msg::TransformStamped> tfs;
 
@@ -253,18 +261,31 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
         msg_detection.centre.y = det->c[1];
         std::memcpy(msg_detection.corners.data(), det->p, sizeof(double) * 8);
         std::memcpy(msg_detection.homography.data(), det->H->data, sizeof(double) * 9);
-        msg_detections.detections.push_back(msg_detection);
 
         // 3D orientation and position
         if(estimate_pose != nullptr && calibrated) {
             geometry_msgs::msg::TransformStamped tf;
-            tf.header = msg_img->header;
+            tf.header = header;
             // set child frame name by generic tag name or configured tag name
             tf.child_frame_id = tag_frames.count(det->id) ? tag_frames.at(det->id) : std::string(det->family->name) + ":" + std::to_string(det->id);
             const double size = tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size;
             tf.transform = estimate_pose(det, intrinsics, size);
             tfs.push_back(tf);
+
+            // position
+            msg_detection.pose.header.frame_id = header.frame_id;
+            msg_detection.pose.pose.position.x = tf.transform.translation.x;
+            msg_detection.pose.pose.position.y = tf.transform.translation.y;
+            msg_detection.pose.pose.position.z = tf.transform.translation.z;
+
+            // orientation
+            msg_detection.pose.pose.orientation.x = tf.transform.rotation.x;
+            msg_detection.pose.pose.orientation.y = tf.transform.rotation.y;
+            msg_detection.pose.pose.orientation.z = tf.transform.rotation.z;
+            msg_detection.pose.pose.orientation.w = tf.transform.rotation.w;
         }
+        
+        msg_detections.detections.push_back(msg_detection);
     }
 
     pub_detections->publish(msg_detections);
